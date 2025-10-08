@@ -23,8 +23,9 @@ from ..core.config_manager import ConfigManager, WatermarkConfig
 class ImageListWidget(QListWidget):
     """自定义图像列表控件，支持拖拽"""
     
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
         self.setAcceptDrops(True)
         self.setDragDropMode(QListWidget.InternalMove)
         
@@ -45,7 +46,7 @@ class ImageListWidget(QListWidget):
         if event.mimeData().hasUrls():
             urls = event.mimeData().urls()
             files = [url.toLocalFile() for url in urls]
-            self.parent().load_dropped_files(files)
+            self.main_window.load_dropped_files(files)
             event.accept()
         else:
             event.ignore()
@@ -67,6 +68,7 @@ class PreviewGraphicsView(QGraphicsView):
     def set_image(self, pixmap: QPixmap):
         """设置要显示的图像"""
         self.scene.clear()
+        self.image_item = None  # 清空引用
         if pixmap and not pixmap.isNull():
             self.image_item = QGraphicsPixmapItem(pixmap)
             self.scene.addItem(self.image_item)
@@ -75,7 +77,7 @@ class PreviewGraphicsView(QGraphicsView):
     def resizeEvent(self, event):
         """窗口大小改变时重新调整图像"""
         super().resizeEvent(event)
-        if self.image_item:
+        if self.image_item and self.image_item.scene():
             self.fitInView(self.image_item, Qt.KeepAspectRatio)
 
 
