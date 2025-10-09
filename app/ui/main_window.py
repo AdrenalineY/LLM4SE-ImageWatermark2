@@ -27,28 +27,57 @@ class ImageListWidget(QListWidget):
         super().__init__(parent)
         self.main_window = main_window
         self.setAcceptDrops(True)
-        self.setDragDropMode(QListWidget.InternalMove)
+        # 设置为接受拖拽模式，而不是内部移动模式
+        self.setDragDropMode(QListWidget.DropOnly)
         
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
+        """拖拽进入事件"""
+        try:
+            if event.mimeData().hasUrls():
+                # 检查是否有有效的文件URL
+                urls = event.mimeData().urls()
+                valid_files = []
+                for url in urls:
+                    file_path = url.toLocalFile()
+                    if file_path and (os.path.isfile(file_path) or os.path.isdir(file_path)):
+                        valid_files.append(file_path)
+                
+                if valid_files:
+                    event.acceptProposedAction()
+                    return
+            
+            event.ignore()
+        except Exception as e:
+            print(f"拖拽进入事件错误: {e}")
             event.ignore()
             
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.setDropAction(Qt.CopyAction)
-            event.accept()
-        else:
+        """拖拽移动事件"""
+        try:
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        except Exception as e:
+            print(f"拖拽移动事件错误: {e}")
             event.ignore()
             
     def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            files = [url.toLocalFile() for url in urls]
-            self.main_window.load_dropped_files(files)
-            event.accept()
-        else:
+        """拖拽放下事件"""
+        try:
+            if event.mimeData().hasUrls():
+                urls = event.mimeData().urls()
+                files = [url.toLocalFile() for url in urls if url.toLocalFile()]
+                
+                if files:
+                    print(f"收到拖拽文件: {files}")
+                    self.main_window.load_dropped_files(files)
+                    event.acceptProposedAction()
+                    return
+            
+            event.ignore()
+        except Exception as e:
+            print(f"拖拽放下事件错误: {e}")
             event.ignore()
 
 
@@ -171,6 +200,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Photo Watermark 2")
         self.setGeometry(100, 100, 1200, 800)
         
+        # 启用主窗口的拖拽支持
+        self.setAcceptDrops(True)
+        
         # 初始化核心组件
         self.image_processor = ImageProcessor()
         self.config_manager = ConfigManager()
@@ -234,7 +266,11 @@ class MainWindow(QMainWindow):
         
         # 图像列表
         self.image_list = ImageListWidget(self)
-        self.image_list.setIconSize(QSize(120, 120))
+        self.image_list.setIconSize(QSize(100, 100))
+        self.image_list.setResizeMode(QListWidget.Adjust)
+        self.image_list.setViewMode(QListWidget.IconMode)
+        self.image_list.setMovement(QListWidget.Static)
+        self.image_list.setSpacing(5)
         left_layout.addWidget(self.image_list)
         
         # 清空按钮
@@ -783,3 +819,54 @@ class MainWindow(QMainWindow):
         self.config_manager.save_config()
         
         event.accept()
+    
+    def dragEnterEvent(self, event):
+        """主窗口拖拽进入事件"""
+        try:
+            if event.mimeData().hasUrls():
+                # 检查是否有有效的文件URL
+                urls = event.mimeData().urls()
+                valid_files = []
+                for url in urls:
+                    file_path = url.toLocalFile()
+                    if file_path and (os.path.isfile(file_path) or os.path.isdir(file_path)):
+                        valid_files.append(file_path)
+                
+                if valid_files:
+                    print(f"主窗口接受拖拽: {valid_files}")
+                    event.acceptProposedAction()
+                    return
+            
+            event.ignore()
+        except Exception as e:
+            print(f"主窗口拖拽进入事件错误: {e}")
+            event.ignore()
+    
+    def dragMoveEvent(self, event):
+        """主窗口拖拽移动事件"""
+        try:
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        except Exception as e:
+            print(f"主窗口拖拽移动事件错误: {e}")
+            event.ignore()
+    
+    def dropEvent(self, event):
+        """主窗口拖拽放下事件"""
+        try:
+            if event.mimeData().hasUrls():
+                urls = event.mimeData().urls()
+                files = [url.toLocalFile() for url in urls if url.toLocalFile()]
+                
+                if files:
+                    print(f"主窗口收到拖拽文件: {files}")
+                    self.load_dropped_files(files)
+                    event.acceptProposedAction()
+                    return
+            
+            event.ignore()
+        except Exception as e:
+            print(f"主窗口拖拽放下事件错误: {e}")
+            event.ignore()

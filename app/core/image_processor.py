@@ -118,6 +118,21 @@ class ImageProcessor:
             
         try:
             image = self.images[file_path].copy()
+            
+            # 确保图像是RGB模式，避免透明度和调色板问题
+            if image.mode == 'RGBA':
+                # 对于RGBA图像，创建白色背景并合成
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                background.paste(image, mask=image.split()[-1])  # 使用alpha通道作为mask
+                image = background
+            elif image.mode in ('P', 'L', 'LA'):
+                # 转换调色板和灰度图像为RGB
+                image = image.convert('RGB')
+            elif image.mode not in ('RGB', 'YCbCr'):
+                # 其他模式也转换为RGB
+                image = image.convert('RGB')
+            
+            # 创建缩略图，保持宽高比
             image.thumbnail(size, Image.Resampling.LANCZOS)
             
             # 转换为QPixmap
@@ -261,24 +276,41 @@ class ImageProcessor:
             QPixmap: Qt pixmap对象
         """
         try:
-            # 转换为RGB模式
+            # 确保图像是RGB模式
             if pil_image.mode == 'RGBA':
-                pil_image = pil_image.convert('RGB')
+                # 创建白色背景并合成RGBA图像
+                background = Image.new('RGB', pil_image.size, (255, 255, 255))
+                background.paste(pil_image, mask=pil_image.split()[-1])
+                pil_image = background
             elif pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
             
             # 获取图像数据
             width, height = pil_image.size
-            rgb_image = pil_image.tobytes('raw', 'RGB')
             
-            # 创建QImage
-            qimage = QImage(rgb_image, width, height, QImage.Format_RGB888)
+            # 使用正确的字节顺序和步长
+            rgb_image = pil_image.tobytes('raw', 'RGB')
+            bytes_per_line = width * 3  # RGB每像素3字节
+            
+            # 创建QImage，确保字节顺序正确
+            qimage = QImage(rgb_image, width, height, bytes_per_line, QImage.Format_RGB888)
             
             # 转换为QPixmap
-            return QPixmap.fromImage(qimage)
+            if qimage.isNull():
+                print("警告: 创建的QImage为空")
+                return QPixmap()
+                
+            pixmap = QPixmap.fromImage(qimage)
+            if pixmap.isNull():
+                print("警告: 创建的QPixmap为空")
+                return QPixmap()
+                
+            return pixmap
             
         except Exception as e:
             print(f"PIL转QPixmap失败: {e}")
+            import traceback
+            traceback.print_exc()
             return QPixmap()
     
     def remove_image(self, file_path: str) -> bool:
