@@ -146,6 +146,7 @@ class PreviewGraphicsView(QGraphicsView):
         
         # 图像原始尺寸（用于位置计算）
         self.original_image_size = (0, 0)
+        self._suspend_position_emission = False
         
     def set_image(self, pixmap: QPixmap):
         """设置要显示的图像"""
@@ -185,12 +186,14 @@ class PreviewGraphicsView(QGraphicsView):
         self.watermark_item.set_image_bounds(image_rect)
         
         # 设置初始位置
+        self._suspend_position_emission = True
         if position:
             # 将原始图像坐标转换为场景坐标
             scale_x = image_rect.width() / self.original_image_size[0]
             scale_y = image_rect.height() / self.original_image_size[1]
             scene_x = image_rect.left() + position[0] * scale_x
             scene_y = image_rect.top() + position[1] * scale_y
+            setattr(self.watermark_item, "_ignore_next_bound", True)
             self.watermark_item.setPos(scene_x, scene_y)
         else:
             # 默认位置：右下角
@@ -204,12 +207,19 @@ class PreviewGraphicsView(QGraphicsView):
         
         # 连接位置变化信号
         self.watermark_item.itemChange = self._on_watermark_position_change
+        QTimer.singleShot(0, self._resume_position_emission)
         
     def _on_watermark_position_change(self, change, value):
         """水印位置变化处理"""
+        if change == QGraphicsItem.ItemPositionChange and getattr(self.watermark_item, "_ignore_next_bound", False):
+            setattr(self.watermark_item, "_ignore_next_bound", False)
+            return value
+
         result = DraggableWatermarkItem.itemChange(self.watermark_item, change, value)
         
         if change == QGraphicsItem.ItemPositionHasChanged and self.image_item:
+            if self._suspend_position_emission:
+                return result
             # 将场景坐标转换回原始图像坐标
             image_rect = self.image_item.boundingRect()
             scene_pos = self.watermark_item.pos()
@@ -229,6 +239,9 @@ class PreviewGraphicsView(QGraphicsView):
             self.watermark_position_changed.emit((original_x, original_y))
             
         return result
+
+    def _resume_position_emission(self):
+        self._suspend_position_emission = False
     
     def get_watermark_position(self):
         """获取当前水印在原始图像中的位置"""
@@ -368,6 +381,8 @@ class MainWindow(QMainWindow):
         # 自定义位置跟踪
         self.custom_watermark_position = None
         self.use_custom_position = False
+        self._suppress_watermark_position_signal = False
+        self._pending_preset_position = False
         
         # 设置界面
         self.setup_ui()
@@ -684,7 +699,7 @@ class MainWindow(QMainWindow):
         self.watermark_text.textChanged.connect(self.on_watermark_changed)
         self.font_size_spin.valueChanged.connect(self.on_watermark_changed)
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
-        self.position_buttons.buttonClicked.connect(self.on_watermark_changed)
+        self.position_buttons.buttonClicked.connect(self.on_position_button_clicked)
         
         # 导出设置
         self.format_combo.currentTextChanged.connect(self.on_format_changed)
@@ -817,12 +832,6 @@ class MainWindow(QMainWindow):
     
     def on_watermark_changed(self):
         """水印设置改变事件"""
-        # 如果是位置按钮触发的变化，重置自定义位置
-        sender = self.sender()
-        if sender in self.position_buttons.buttons():
-            self.use_custom_position = False
-            self.custom_watermark_position = None
-        
         # 延迟更新预览以避免频繁刷新
         self.preview_timer.stop()
         self.preview_timer.start(300)  # 300ms 延迟
@@ -832,6 +841,14 @@ class MainWindow(QMainWindow):
         value = self.opacity_slider.value()
         percent = int(value * 100 / 255)
         self.opacity_label.setText(f"{percent}%")
+        self.on_watermark_changed()
+
+    def on_position_button_clicked(self, button):
+        """九宫格位置按钮点击事件"""
+        if button not in self.position_buttons.buttons():
+            return
+        self.use_custom_position = False
+        self.custom_watermark_position = None
         self.on_watermark_changed()
     
     def on_format_changed(self):
@@ -873,6 +890,13 @@ class MainWindow(QMainWindow):
     
     def on_watermark_position_changed(self, position):
         """水印位置变化事件"""
+        if self._pending_preset_position:
+            self._pending_preset_position = False
+            self.custom_watermark_position = None
+            self.use_custom_position = False
+            return
+        if self._suppress_watermark_position_signal:
+            return
         # 更新自定义位置
         self.custom_watermark_position = position
         self.use_custom_position = True
@@ -883,6 +907,13 @@ class MainWindow(QMainWindow):
         
         print(f"水印位置已更新为: {position}")  # 调试信息
     
+    def _clear_watermark_position_suppression(self):
+        """在事件循环空闲时恢复位置同步"""
+        self._suppress_watermark_position_signal = False
+
+    def _clear_pending_preset_position(self):
+        self._pending_preset_position = False
+
     def refresh_template_list(self):
         """刷新模板列表"""
         self.template_combo.clear()
@@ -1053,13 +1084,22 @@ class MainWindow(QMainWindow):
         self.preview_view.set_image(pixmap)
         
         # 添加可拖拽的水印预览
+        self._pending_preset_position = not config.use_custom_position
         if config.text.strip():  # 只有在有文本时才显示水印
+            self._suppress_watermark_position_signal = True
             self.preview_view.add_watermark_preview(
                 config.text,
                 config.font_size,
                 config.opacity,
                 position
             )
+            QTimer.singleShot(0, self._clear_watermark_position_suppression)
+        else:
+            self._pending_preset_position = False
+            QTimer.singleShot(0, self._clear_watermark_position_suppression)
+
+        if self._pending_preset_position:
+            QTimer.singleShot(0, self._clear_pending_preset_position)
     
     def get_current_config(self) -> WatermarkConfig:
         """获取当前UI配置"""
