@@ -373,6 +373,9 @@ class MainWindow(QMainWindow):
         self.setup_ui()
         self.connect_signals()
         
+        # 初始化模板列表
+        self.refresh_template_list()
+        
         # 加载配置
         self.load_config_to_ui()
         
@@ -469,6 +472,9 @@ class MainWindow(QMainWindow):
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
         
+        # 模板管理组
+        self.setup_template_group(scroll_layout)
+        
         # 水印设置组
         self.setup_watermark_group(scroll_layout)
         
@@ -484,6 +490,43 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(scroll)
         
         parent.addWidget(right_widget)
+        
+    def setup_template_group(self, parent_layout):
+        """设置模板管理组"""
+        template_group = QGroupBox("配置模板")
+        template_layout = QVBoxLayout(template_group)
+        
+        # 模板选择下拉框
+        template_select_layout = QHBoxLayout()
+        template_select_layout.addWidget(QLabel("选择模板:"))
+        self.template_combo = QComboBox()
+        self.template_combo.setMinimumWidth(120)
+        template_select_layout.addWidget(self.template_combo)
+        template_layout.addLayout(template_select_layout)
+        
+        # 模板操作按钮
+        template_buttons_layout = QHBoxLayout()
+        
+        self.load_template_btn = QPushButton("加载")
+        self.load_template_btn.setMaximumWidth(60)
+        template_buttons_layout.addWidget(self.load_template_btn)
+        
+        self.save_template_btn = QPushButton("保存为模板")
+        template_buttons_layout.addWidget(self.save_template_btn)
+        
+        self.delete_template_btn = QPushButton("删除")
+        self.delete_template_btn.setMaximumWidth(60)
+        template_buttons_layout.addWidget(self.delete_template_btn)
+        
+        template_layout.addLayout(template_buttons_layout)
+        
+        # 重置按钮
+        reset_layout = QHBoxLayout()
+        self.reset_config_btn = QPushButton("重置为默认设置")
+        reset_layout.addWidget(self.reset_config_btn)
+        template_layout.addLayout(reset_layout)
+        
+        parent_layout.addWidget(template_group)
         
     def setup_watermark_group(self, parent_layout):
         """设置水印配置组"""
@@ -654,6 +697,13 @@ class MainWindow(QMainWindow):
         
         # 预览视图水印拖拽
         self.preview_view.watermark_position_changed.connect(self.on_watermark_position_changed)
+        
+        # 模板管理
+        self.load_template_btn.clicked.connect(self.load_template)
+        self.save_template_btn.clicked.connect(self.save_template)
+        self.delete_template_btn.clicked.connect(self.delete_template)
+        self.reset_config_btn.clicked.connect(self.reset_config)
+        self.template_combo.currentTextChanged.connect(self.on_template_selection_changed)
         
         # 导出按钮
         self.export_btn.clicked.connect(self.export_images)
@@ -833,6 +883,151 @@ class MainWindow(QMainWindow):
         
         print(f"水印位置已更新为: {position}")  # 调试信息
     
+    def refresh_template_list(self):
+        """刷新模板列表"""
+        self.template_combo.clear()
+        template_names = self.config_manager.get_template_names()
+        if template_names:
+            self.template_combo.addItems(template_names)
+        
+        # 更新按钮状态
+        has_templates = len(template_names) > 0
+        self.load_template_btn.setEnabled(has_templates)
+        self.delete_template_btn.setEnabled(has_templates)
+    
+    def load_template(self):
+        """加载选中的模板（显式加载，带确认提示）"""
+        template_name = self.template_combo.currentText()
+        if not template_name:
+            QMessageBox.warning(self, "警告", "请选择要加载的模板")
+            return
+        
+        # 显式加载时提供确认提示
+        if self.config_manager.load_template(template_name):
+            self.load_config_to_ui_silent()  # 静默加载，不触发预览更新
+            self.update_preview()
+            self.statusBar().showMessage(f"已加载模板: {template_name}")
+            QMessageBox.information(self, "成功", f"模板 '{template_name}' 已成功加载！")
+        else:
+            QMessageBox.critical(self, "错误", f"加载模板失败: {template_name}")
+    
+    def save_template(self):
+        """保存当前设置为模板"""
+        from PyQt5.QtWidgets import QInputDialog
+        
+        template_name, ok = QInputDialog.getText(
+            self, "保存模板", "请输入模板名称:", 
+            text="我的水印模板"
+        )
+        
+        if ok and template_name.strip():
+            template_name = template_name.strip()
+            
+            # 检查模板是否已存在
+            existing_templates = self.config_manager.get_template_names()
+            if template_name in existing_templates:
+                reply = QMessageBox.question(
+                    self, "确认覆盖", 
+                    f"模板 '{template_name}' 已存在，是否覆盖？",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+            
+            # 获取当前配置并保存为模板
+            current_config = self.get_current_config()
+            if self.config_manager.save_template(template_name, current_config):
+                self.refresh_template_list()
+                self.template_combo.setCurrentText(template_name)
+                self.statusBar().showMessage(f"已保存模板: {template_name}")
+                QMessageBox.information(self, "成功", f"模板 '{template_name}' 保存成功！")
+            else:
+                QMessageBox.critical(self, "错误", f"保存模板失败: {template_name}")
+    
+    def delete_template(self):
+        """删除选中的模板"""
+        template_name = self.template_combo.currentText()
+        if not template_name:
+            QMessageBox.warning(self, "警告", "请选择要删除的模板")
+            return
+        
+        reply = QMessageBox.question(
+            self, "确认删除", 
+            f"确定要删除模板 '{template_name}' 吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.config_manager.delete_template(template_name):
+                self.refresh_template_list()
+                self.statusBar().showMessage(f"已删除模板: {template_name}")
+                QMessageBox.information(self, "成功", f"模板 '{template_name}' 删除成功！")
+            else:
+                QMessageBox.critical(self, "错误", f"删除模板失败: {template_name}")
+    
+    def reset_config(self):
+        """重置为默认配置"""
+        reply = QMessageBox.question(
+            self, "确认重置", 
+            "确定要重置为默认设置吗？所有当前设置将被清除。",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.config_manager.reset_to_default()
+            self.use_custom_position = False
+            self.custom_watermark_position = None
+            self.load_config_to_ui_silent()
+            self.update_preview()
+            self.statusBar().showMessage("已重置为默认设置")
+            QMessageBox.information(self, "成功", "已重置为默认设置")
+    
+    def refresh_template_list(self):
+        """刷新模板列表"""
+        # 保存当前选择
+        current_selection = self.template_combo.currentText()
+        
+        # 临时阻塞信号，避免在重新填充时触发模板加载
+        self.template_combo.blockSignals(True)
+        
+        try:
+            # 清空并重新填充
+            self.template_combo.clear()
+            templates = self.config_manager.get_template_names()
+            
+            if templates:
+                self.template_combo.addItems(templates)
+                # 尝试恢复之前的选择
+                if current_selection in templates:
+                    index = self.template_combo.findText(current_selection)
+                    if index >= 0:
+                        self.template_combo.setCurrentIndex(index)
+        finally:
+            # 恢复信号
+            self.template_combo.blockSignals(False)
+        
+        # 手动触发模板选择变化事件，确保当前选择的模板被加载
+        self.on_template_selection_changed(self.template_combo.currentText())
+    
+    def on_template_selection_changed(self, template_name):
+        """模板选择变化事件 - 自动加载选中的模板"""
+        # 更新按钮状态
+        has_selection = bool(template_name)
+        self.load_template_btn.setEnabled(has_selection)
+        self.delete_template_btn.setEnabled(has_selection)
+        
+        # 自动加载选中的模板（如果有选择的话）
+        if template_name and template_name.strip():
+            if self.config_manager.load_template(template_name):
+                self.load_config_to_ui_silent()  # 静默加载，不触发预览更新
+                self.update_preview()
+                self.statusBar().showMessage(f"已自动加载模板: {template_name}")
+            else:
+                self.statusBar().showMessage(f"加载模板失败: {template_name}")
+        else:
+            # 如果没有选择模板，清空状态栏消息
+            self.statusBar().clearMessage()
+    
     def update_preview(self):
         """更新预览"""
         current_image = self.image_processor.get_current_image()
@@ -934,10 +1129,111 @@ class MainWindow(QMainWindow):
         self.prefix_input.setText(config.filename_prefix)
         self.suffix_input.setText(config.filename_suffix)
         
+        # 处理自定义位置
+        if config.use_custom_position and config.custom_position:
+            # 加载自定义位置
+            self.use_custom_position = True
+            self.custom_watermark_position = config.custom_position
+            # 取消所有位置按钮的选择
+            for button in self.position_buttons.buttons():
+                button.setChecked(False)
+        else:
+            # 使用九宫格位置
+            self.use_custom_position = False
+            self.custom_watermark_position = None
+        
         # 初始化文件名规则状态
         self.on_filename_rule_changed()
         
         self.on_format_changed()
+    
+    def load_config_to_ui_silent(self):
+        """静默加载配置到UI（不触发信号和预览更新）"""
+        config = self.config_manager.get_config()
+        
+        # 临时阻塞信号
+        self.watermark_text.blockSignals(True)
+        self.font_size_spin.blockSignals(True)
+        self.opacity_slider.blockSignals(True)
+        self.format_combo.blockSignals(True)
+        self.jpeg_quality_slider.blockSignals(True)
+        self.prefix_input.blockSignals(True)
+        self.suffix_input.blockSignals(True)
+        
+        try:
+            # 设置水印配置
+            self.watermark_text.setText(config.text)
+            self.font_size_spin.setValue(config.font_size)
+            self.opacity_slider.setValue(config.opacity)
+            
+            # 设置位置
+            for button in self.position_buttons.buttons():
+                button.blockSignals(True)
+                if button.property("position") == config.position_type:
+                    button.setChecked(True)
+                else:
+                    button.setChecked(False)
+                button.blockSignals(False)
+            
+            # 设置导出配置
+            self.format_combo.setCurrentText(config.output_format)
+            self.jpeg_quality_slider.setValue(config.jpeg_quality)
+            
+            # 设置文件名规则
+            self.filename_original.blockSignals(True)
+            self.filename_prefix.blockSignals(True)
+            self.filename_suffix.blockSignals(True)
+            
+            if config.filename_rule == "original":
+                self.filename_original.setChecked(True)
+                self.filename_prefix.setChecked(False)
+                self.filename_suffix.setChecked(False)
+            elif config.filename_rule == "prefix":
+                self.filename_original.setChecked(False)
+                self.filename_prefix.setChecked(True)
+                self.filename_suffix.setChecked(False)
+            else:
+                self.filename_original.setChecked(False)
+                self.filename_prefix.setChecked(False)
+                self.filename_suffix.setChecked(True)
+            
+            self.filename_original.blockSignals(False)
+            self.filename_prefix.blockSignals(False)
+            self.filename_suffix.blockSignals(False)
+            
+            self.prefix_input.setText(config.filename_prefix)
+            self.suffix_input.setText(config.filename_suffix)
+            
+            # 处理自定义位置
+            if config.use_custom_position and config.custom_position:
+                # 加载自定义位置
+                self.use_custom_position = True
+                self.custom_watermark_position = config.custom_position
+                # 取消所有位置按钮的选择
+                for button in self.position_buttons.buttons():
+                    button.blockSignals(True)
+                    button.setChecked(False)
+                    button.blockSignals(False)
+            else:
+                # 使用九宫格位置
+                self.use_custom_position = False
+                self.custom_watermark_position = None
+            
+            # 更新UI状态
+            self.on_filename_rule_changed()
+            self.on_format_changed()
+            self.on_opacity_changed()
+            self.on_jpeg_quality_changed()
+            
+        finally:
+            # 恢复信号
+            self.watermark_text.blockSignals(False)
+            self.font_size_spin.blockSignals(False)
+            self.opacity_slider.blockSignals(False)
+            self.format_combo.blockSignals(False)
+            self.jpeg_quality_slider.blockSignals(False)
+            self.prefix_input.blockSignals(False)
+            self.suffix_input.blockSignals(False)
     
     def export_images(self):
         """导出图像"""
