@@ -490,6 +490,11 @@ class MainWindow(QMainWindow):
         self.format_combo.currentTextChanged.connect(self.on_format_changed)
         self.jpeg_quality_slider.valueChanged.connect(self.on_jpeg_quality_changed)
         
+        # 文件名规则设置
+        self.filename_original.toggled.connect(self.on_filename_rule_changed)
+        self.filename_prefix.toggled.connect(self.on_filename_rule_changed)
+        self.filename_suffix.toggled.connect(self.on_filename_rule_changed)
+        
         # 导出按钮
         self.export_btn.clicked.connect(self.export_images)
     
@@ -630,6 +635,26 @@ class MainWindow(QMainWindow):
         value = self.jpeg_quality_slider.value()
         self.jpeg_quality_label.setText(f"{value}%")
     
+    def on_filename_rule_changed(self):
+        """文件名规则改变事件"""
+        # 根据选择的规则启用/禁用对应的输入框
+        if self.filename_original.isChecked():
+            # 保持原名 - 禁用所有输入框
+            self.prefix_input.setEnabled(False)
+            self.suffix_input.setEnabled(False)
+        elif self.filename_prefix.isChecked():
+            # 添加前缀 - 只启用前缀输入框
+            self.prefix_input.setEnabled(True)
+            self.suffix_input.setEnabled(False)
+            # 将焦点设置到前缀输入框
+            self.prefix_input.setFocus()
+        elif self.filename_suffix.isChecked():
+            # 添加后缀 - 只启用后缀输入框
+            self.prefix_input.setEnabled(False)
+            self.suffix_input.setEnabled(True)
+            # 将焦点设置到后缀输入框
+            self.suffix_input.setFocus()
+    
     def update_preview(self):
         """更新预览"""
         current_image = self.image_processor.get_current_image()
@@ -725,6 +750,9 @@ class MainWindow(QMainWindow):
         
         self.prefix_input.setText(config.filename_prefix)
         self.suffix_input.setText(config.filename_suffix)
+        
+        # 初始化文件名规则状态
+        self.on_filename_rule_changed()
         
         self.on_format_changed()
     
