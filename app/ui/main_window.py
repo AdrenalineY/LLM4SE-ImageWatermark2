@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QColorDialog, QCheckBox, QTabWidget, QGraphicsDropShadowEffect
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QRectF, QPointF
-from PyQt5.QtGui import QPixmap, QIcon, QFont, QPainter, QPen, QColor
+from PyQt5.QtGui import QPixmap, QIcon, QFont, QPainter, QPen, QColor, QFontInfo
 
 from ..core.image_processor import ImageProcessor
 from ..core.config_manager import ConfigManager, WatermarkConfig
@@ -1574,7 +1574,8 @@ class MainWindow(QMainWindow):
             tuple(config.shadow_offset),
             config.rotation_angle,
             config.font_path or None,
-            config.font_index
+            config.font_index,
+            getattr(config, "font_style_name", "")
         )
 
     @staticmethod
@@ -1662,9 +1663,38 @@ class MainWindow(QMainWindow):
         config.text = self.watermark_text.text()
         config.font_size = self.font_size_spin.value()
         current_font = self.font_combo.currentFont()
-        config.font_family = current_font.family()
         config.font_bold = self.bold_btn.isChecked()
         config.font_italic = self.italic_btn.isChecked()
+        current_font.setBold(config.font_bold)
+        current_font.setItalic(config.font_italic)
+        current_font.setPixelSize(max(1, config.font_size))
+        font_info = QFontInfo(current_font)
+        family = font_info.family() or current_font.family()
+        config.font_family = family
+        config.font_style_name = font_info.styleName() or current_font.styleName()
+        alias_candidates: list[str] = []
+
+        def add_alias(value: str) -> None:
+            if not value:
+                return
+            normalized = value.strip()
+            if not normalized:
+                return
+            if normalized.lower() == config.font_family.lower():
+                return
+            if any(existing.lower() == normalized.lower() for existing in alias_candidates):
+                return
+            alias_candidates.append(normalized)
+
+        raw_name = current_font.rawName()
+        if raw_name:
+            for part in raw_name.replace(";", ",").split(","):
+                add_alias(part)
+
+        default_family = current_font.defaultFamily()
+        add_alias(default_family)
+
+        config.font_family_aliases = alias_candidates
         config.opacity = self.opacity_slider.value()
         config.text_color = (
             self.text_color.red(),
@@ -1722,13 +1752,15 @@ class MainWindow(QMainWindow):
         config.resize_percentage = self.resize_percent_spin.value()
         config.keep_aspect_ratio = self.keep_aspect_check.isChecked()
 
-        resolved_font = self.image_processor.resolve_font_face(
-            config.font_family,
+        resolved_family, resolved_data = self.image_processor.resolve_font_with_aliases(
+            [config.font_family, *config.font_family_aliases],
             config.font_bold,
-            config.font_italic
+            config.font_italic,
+            getattr(config, "font_style_name", "")
         )
-        if resolved_font:
-            config.font_path, config.font_index = resolved_font
+        if resolved_data:
+            config.font_family = resolved_family or config.font_family
+            config.font_path, config.font_index = resolved_data
         else:
             config.font_path = ""
             config.font_index = 0

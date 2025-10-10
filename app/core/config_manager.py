@@ -6,7 +6,7 @@
 import json
 import os
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 
 @dataclass
@@ -32,7 +32,8 @@ class WatermarkConfig:
     stroke_color: tuple = (0, 0, 0)
     font_path: str = ""
     font_index: int = 0
-
+    font_style_name: str = ""
+    font_family_aliases: List[str] = field(default_factory=list)
     # 图片水印 (4.7)
     watermark_type: str = "text"  # text 或 image
     image_watermark_path: str = ""

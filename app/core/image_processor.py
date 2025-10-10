@@ -7,7 +7,7 @@ import os
 import sys
 import math
 from dataclasses import dataclass
-from typing import Tuple, Optional, Union, Dict, TYPE_CHECKING
+from typing import Tuple, Optional, Union, Dict, TYPE_CHECKING, List
 from collections import defaultdict
 from PIL import Image, ImageDraw, ImageFont
 
@@ -27,24 +27,43 @@ class FontEntry:
 class FontResolver:
     def __init__(self):
         self._fonts_by_family: Dict[str, list[FontEntry]] = defaultdict(list)
-        self._cache: Dict[Tuple[str, bool, bool], Optional[Tuple[str, int]]] = {}
+        self._cache: Dict[Tuple[str, bool, bool, str], Optional[Tuple[str, int]]] = {}
         self._indexed = False
 
-    def resolve(self, family: str, bold: bool, italic: bool) -> Optional[Tuple[str, int]]:
+    def resolve(self, family: str, bold: bool, italic: bool, style_name: str = "") -> Optional[Tuple[str, int]]:
         if not family:
             return None
-        key = (family.lower(), bool(bold), bool(italic))
+        target_style = (style_name or "").lower().strip()
+        key = (family.lower(), bool(bold), bool(italic), target_style)
         if key in self._cache:
             return self._cache[key]
 
         self._ensure_index()
         entries = self._fonts_by_family.get(family.lower())
         if not entries:
+            normalized = self._normalize_family(family)
+            if normalized:
+                entries = self._fonts_by_family.get(normalized)
+        if not entries:
             self._cache[key] = None
             return None
 
-        best_entry = max(entries, key=lambda entry: self._score_entry(entry.style, bold, italic))
-        if self._score_entry(best_entry.style, bold, italic) == 0:
+        best_entry = None
+        best_score = -1
+
+        for entry in entries:
+            score = self._score_entry(entry.style, bold, italic)
+            style_lower = (entry.style or "").lower()
+            if target_style:
+                if style_lower == target_style:
+                    score += 5
+                elif target_style in style_lower:
+                    score += 3
+            if score > best_score:
+                best_entry = entry
+                best_score = score
+
+        if best_entry is None:
             best_entry = entries[0]
 
         result = (best_entry.path, best_entry.index)
@@ -94,6 +113,19 @@ class FontResolver:
                 continue
         self._indexed = True
 
+    def _store_entry(self, family: str, entry: FontEntry) -> None:
+        key = family.lower()
+        self._fonts_by_family[key].append(entry)
+        normalized = self._normalize_family(family)
+        if normalized and normalized != key:
+            self._fonts_by_family[normalized].append(entry)
+
+    @staticmethod
+    def _normalize_family(name: str) -> str:
+        if not name:
+            return ""
+        return "".join(ch for ch in name.lower() if ch.isalnum())
+
     def _index_collection(self, path: str, seen_entries: set[Tuple[str, int]]) -> None:
         for index in range(10):
             if (path, index) in seen_entries:
@@ -105,7 +137,7 @@ class FontResolver:
             family, style = font.getname()
             if family:
                 entry = FontEntry(path=path, style=style or "", index=index)
-                self._fonts_by_family[family.lower()].append(entry)
+                self._store_entry(family, entry)
                 seen_entries.add((path, index))
 
     def _index_font_file(self, path: str, index: int, seen_entries: set[Tuple[str, int]]) -> None:
@@ -118,7 +150,7 @@ class FontResolver:
         family, style = font.getname()
         if family:
             entry = FontEntry(path=path, style=style or "", index=index)
-            self._fonts_by_family[family.lower()].append(entry)
+            self._store_entry(family, entry)
             seen_entries.add((path, index))
 
     @staticmethod
@@ -216,13 +248,24 @@ class ImageProcessor:
         font_path = getattr(config, "font_path", "")
         font_index = getattr(config, "font_index", 0)
         if not font_path:
-            resolved = self.resolve_font_face(
-                getattr(config, "font_family", "Arial"),
+            families: list[str] = []
+            primary_family = getattr(config, "font_family", "")
+            if primary_family:
+                families.append(primary_family)
+            aliases = getattr(config, "font_family_aliases", []) or []
+            for alias in aliases:
+                if alias and alias not in families:
+                    families.append(alias)
+            resolved_family, resolved = self.resolve_font_with_aliases(
+                families or ["Arial"],
                 getattr(config, "font_bold", True),
-                getattr(config, "font_italic", False)
+                getattr(config, "font_italic", False),
+                getattr(config, "font_style_name", "")
             )
             if resolved:
                 font_path, font_index = resolved
+                if hasattr(config, "font_family") and resolved_family:
+                    setattr(config, "font_family", resolved_family)
                 if hasattr(config, "font_path"):
                     setattr(config, "font_path", font_path)
                 if hasattr(config, "font_index"):
@@ -240,7 +283,8 @@ class ImageProcessor:
             tuple(getattr(config, "shadow_offset", (0, 0))),
             getattr(config, "rotation_angle", 0),
             font_path,
-            font_index
+            font_index,
+            getattr(config, "font_style_name", "")
         )
 
         if getattr(config, "use_custom_position", False) and getattr(config, "custom_position", None):
@@ -277,7 +321,8 @@ class ImageProcessor:
             getattr(config, "stroke_width", 0),
             stroke_color,
             font_path,
-            font_index
+            font_index,
+            getattr(config, "font_style_name", "")
         )
 
     @staticmethod
@@ -295,11 +340,12 @@ class ImageProcessor:
                       bold: bool, italic: bool, stroke: bool,
                       stroke_width: int, shadow: bool,
                       shadow_offset: Tuple[int, int], rotation: int,
-                      font_path: Optional[str] = None, font_index: int = 0) -> Tuple[int, int]:
+                      font_path: Optional[str] = None, font_index: int = 0,
+                      style_name: str = "") -> Tuple[int, int]:
         if not text:
             return 0, 0
 
-        font = self._load_font(font_family, font_size, bold, italic, font_path, font_index)
+        font = self._load_font(font_family, font_size, bold, italic, font_path, font_index, style_name)
         dummy = Image.new('RGBA', (1, 1), (0, 0, 0, 0))
         draw = ImageDraw.Draw(dummy)
 
@@ -580,23 +626,48 @@ class ImageProcessor:
             return None
     
     def _load_font(self, font_family: str, font_size: int, bold: bool, italic: bool,
-                   font_path: Optional[str] = None, font_index: int = 0) -> ImageFont.FreeTypeFont:
+                   font_path: Optional[str] = None, font_index: int = 0,
+                   style_name: str = "") -> ImageFont.FreeTypeFont:
         """尝试根据字体族和样式加载字体，失败时回退到系统字体"""
         index = max(0, int(font_index or 0))
 
+        # 如果提供了字体路径，先验证它是否匹配所需样式
         if font_path:
             try:
-                return ImageFont.truetype(font_path, font_size, index=index)
-            except Exception:
-                pass
+                test_font = ImageFont.truetype(font_path, 32, index=index)
+                actual_family, actual_style = test_font.getname()
+                actual_style_lower = (actual_style or "").lower()
+                
+                # 检查加载的字体是否真的包含所需样式
+                has_bold = any(token in actual_style_lower for token in ("bold", "black", "heavy", "gras", "fett"))
+                has_italic = any(token in actual_style_lower for token in ("italic", "oblique", "slant", "italique", "kursiv"))
+                
+                style_matches = True
+                if bold and not has_bold:
+                    style_matches = False
+                    print(f"Warning: Font path {font_path} does not contain Bold style (found: {actual_style})")
+                if italic and not has_italic:
+                    style_matches = False
+                    print(f"Warning: Font path {font_path} does not contain Italic style (found: {actual_style})")
+                
+                # 如果样式匹配或者不需要特殊样式，使用该字体
+                if style_matches or (not bold and not italic):
+                    return ImageFont.truetype(font_path, font_size, index=index)
+                else:
+                    print(f"Font path {font_path} style mismatch, re-resolving for bold={bold}, italic={italic}")
+            except Exception as e:
+                print(f"Failed to load font from path {font_path}: {e}")
 
-        resolved = self._font_resolver.resolve(font_family, bold, italic)
+        # 重新解析或首次解析字体
+        resolved = self._font_resolver.resolve(font_family, bold, italic, style_name)
         if resolved:
             path, resolved_index = resolved
             try:
-                return ImageFont.truetype(path, font_size, index=resolved_index)
-            except Exception:
-                pass
+                loaded = ImageFont.truetype(path, font_size, index=resolved_index)
+                print(f"Loaded font: {path} (index={resolved_index}) for {font_family} bold={bold} italic={italic}")
+                return loaded
+            except Exception as e:
+                print(f"Failed to load resolved font {path}: {e}")
 
         base = font_family or "Arial"
         styled_variants = []
@@ -623,14 +694,48 @@ class ImageProcessor:
 
         return ImageFont.load_default()
 
-    def resolve_font_face(self, font_family: str, bold: bool, italic: bool) -> Optional[Tuple[str, int]]:
+    def resolve_font_face(self, font_family: str, bold: bool, italic: bool,
+                          style_name: str = "") -> Optional[Tuple[str, int]]:
         """解析字体的真实路径和索引，若无法解析则返回None"""
-        return self._font_resolver.resolve(font_family, bold, italic)
+        return self._font_resolver.resolve(font_family, bold, italic, style_name)
+
+    def resolve_font_with_aliases(self, families: Union[str, List[str]], bold: bool, italic: bool,
+                                  style_name: str = "") -> Tuple[Optional[str], Optional[Tuple[str, int]]]:
+        """尝试使用多个字体别名解析字体，返回成功的家族名与路径索引"""
+        seen: set[str] = set()
+        if isinstance(families, str):
+            candidates = [families]
+        else:
+            candidates = list(families)
+
+        for name in candidates:
+            if not name:
+                continue
+            if name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            result = self._font_resolver.resolve(name, bold, italic, style_name)
+            if result:
+                return name, result
+
+            normalized = self._normalize_family_name(name)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                result = self._font_resolver.resolve(normalized, bold, italic, style_name)
+                if result:
+                    return name, result
+
+        return None, None
+
+    @staticmethod
+    def _normalize_family_name(name: str) -> str:
+        return "".join(ch for ch in name.lower() if ch.isalnum())
 
     def measure_text(self, text: str, font_family: str, font_size: int,
                      bold: bool, italic: bool, stroke: bool, stroke_width: int,
                      shadow: bool, shadow_offset: Tuple[int, int], rotation: int,
-                     font_path: Optional[str] = None, font_index: int = 0) -> Tuple[int, int]:
+                     font_path: Optional[str] = None, font_index: int = 0,
+                     style_name: str = "") -> Tuple[int, int]:
         """公开的文本尺寸测量接口，便于UI复用相同逻辑"""
         return self._measure_text(
             text,
@@ -644,7 +749,8 @@ class ImageProcessor:
             shadow_offset,
             rotation,
             font_path,
-            font_index
+            font_index,
+            style_name
         )
 
     def add_text_watermark(self, image: Image.Image, text: str, position: Tuple[int, int],
@@ -653,11 +759,11 @@ class ImageProcessor:
                           shadow: bool = False, stroke: bool = False, rotation: int = 0,
                           shadow_offset: Tuple[int, int] = (2, 2), stroke_width: int = 1,
                           stroke_color: tuple = (0, 0, 0), font_path: Optional[str] = None,
-                          font_index: int = 0) -> Image.Image:
+                          font_index: int = 0, style_name: str = "") -> Image.Image:
         """添加高级文本水印"""
         try:
             base_image = image.convert('RGBA') if image.mode != 'RGBA' else image.copy()
-            font = self._load_font(font_family, font_size, bold, italic, font_path, font_index)
+            font = self._load_font(font_family, font_size, bold, italic, font_path, font_index, style_name)
 
             dummy = Image.new('RGBA', (1, 1), (0, 0, 0, 0))
             dummy_draw = ImageDraw.Draw(dummy)
@@ -844,7 +950,7 @@ class ImageProcessor:
                           italic: bool = False, stroke: bool = False,
                           stroke_width: int = 0, shadow: bool = False,
                           shadow_offset: Tuple[int, int] = (0, 0),
-                          rotation: int = 0) -> Tuple[int, int]:
+                          rotation: int = 0, style_name: str = "") -> Tuple[int, int]:
         watermark_size = self._measure_text(
             text or "",
             font_family,
@@ -855,7 +961,8 @@ class ImageProcessor:
             stroke_width,
             shadow,
             shadow_offset,
-            rotation
+            rotation,
+            style_name=style_name
         )
         return self._calculate_grid_position(image_size, watermark_size, position_type)
     
