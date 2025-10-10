@@ -12,32 +12,79 @@ from dataclasses import dataclass, asdict
 @dataclass
 class WatermarkConfig:
     """水印配置数据类"""
-    # 文本水印设置
+    # 基础文本水印设置
     text: str = "Sample Watermark"
     font_size: int = 36
     opacity: int = 128  # 0-255
     position_type: str = "bottom-right"  # 九宫格位置
     custom_position: tuple = (0, 0)  # 自定义位置 (x, y)
     use_custom_position: bool = False
-    
+
+    # 高级文本样式 (4.6)
+    font_family: str = "Arial"
+    font_bold: bool = True
+    font_italic: bool = False
+    text_color: tuple = (255, 255, 255)
+    text_shadow: bool = False
+    text_stroke: bool = False
+    shadow_offset: tuple = (2, 2)
+    stroke_width: int = 1
+    stroke_color: tuple = (0, 0, 0)
+    font_path: str = ""
+    font_index: int = 0
+
+    # 图片水印 (4.7)
+    watermark_type: str = "text"  # text 或 image
+    image_watermark_path: str = ""
+    image_scale: float = 1.0
+    image_opacity: int = 128
+
+    # 水印旋转 (4.9)
+    rotation_angle: int = 0
+
     # 导出设置
     output_format: str = "PNG"  # JPEG 或 PNG
     jpeg_quality: int = 95  # 1-100
     filename_rule: str = "suffix"  # original, prefix, suffix
     filename_prefix: str = "wm_"
     filename_suffix: str = "_watermarked"
-    
+
+    # 高级导出选项 (4.8)
+    resize_enabled: bool = False
+    resize_method: str = "percentage"  # width, height, percentage
+    resize_width: int = 800
+    resize_height: int = 600
+    resize_percentage: int = 100
+    keep_aspect_ratio: bool = True
+
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return asdict(self)
-    
+        """转换为字典，并确保JSON兼容"""
+        data = asdict(self)
+        tuple_keys = {
+            "custom_position",
+            "text_color",
+            "shadow_offset",
+            "stroke_color",
+        }
+        for key in tuple_keys:
+            if key in data and isinstance(data[key], tuple):
+                data[key] = list(data[key])
+        return data
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WatermarkConfig':
-        """从字典创建配置对象"""
-        # 处理可能不存在的键
+        """从字典创建配置对象，兼容旧配置文件"""
         config = cls()
+        tuple_fields = {
+            "custom_position",
+            "text_color",
+            "shadow_offset",
+            "stroke_color",
+        }
         for key, value in data.items():
             if hasattr(config, key):
+                if key in tuple_fields and isinstance(value, list):
+                    value = tuple(value)
                 setattr(config, key, value)
         return config
 

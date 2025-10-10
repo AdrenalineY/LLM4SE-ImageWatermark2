@@ -11,9 +11,10 @@ from PyQt5.QtWidgets import (
     QGraphicsPixmapItem, QGraphicsTextItem, QGraphicsItem, QPushButton, 
     QLabel, QLineEdit, QSlider, QComboBox, QGroupBox, QGridLayout, 
     QFileDialog, QMessageBox, QProgressBar, QApplication, QFrame, 
-    QScrollArea, QButtonGroup, QRadioButton, QSpinBox
+    QScrollArea, QButtonGroup, QRadioButton, QSpinBox, QFontComboBox,
+    QColorDialog, QCheckBox, QTabWidget, QGraphicsDropShadowEffect
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QRectF
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QTimer, QRectF, QPointF
 from PyQt5.QtGui import QPixmap, QIcon, QFont, QPainter, QPen, QColor
 
 from ..core.image_processor import ImageProcessor
@@ -110,20 +111,82 @@ class DraggableWatermarkItem(QGraphicsTextItem):
             # 限制水印在图像范围内移动
             new_pos = value
             item_rect = self.boundingRect()
-            
-            # 计算限制后的位置
-            if new_pos.x() < self.image_bounds.left():
-                new_pos.setX(self.image_bounds.left())
-            elif new_pos.x() + item_rect.width() > self.image_bounds.right():
-                new_pos.setX(self.image_bounds.right() - item_rect.width())
-                
-            if new_pos.y() < self.image_bounds.top():
-                new_pos.setY(self.image_bounds.top())
-            elif new_pos.y() + item_rect.height() > self.image_bounds.bottom():
-                new_pos.setY(self.image_bounds.bottom() - item_rect.height())
+            half_w = item_rect.width() / 2
+            half_h = item_rect.height() / 2
+
+            center_x = new_pos.x() + half_w
+            center_y = new_pos.y() + half_h
+
+            left_limit = self.image_bounds.left() + half_w
+            right_limit = self.image_bounds.right() - half_w
+            top_limit = self.image_bounds.top() + half_h
+            bottom_limit = self.image_bounds.bottom() - half_h
+
+            if left_limit > right_limit:
+                left_limit = right_limit = (self.image_bounds.left() + self.image_bounds.right()) / 2
+            if top_limit > bottom_limit:
+                top_limit = bottom_limit = (self.image_bounds.top() + self.image_bounds.bottom()) / 2
+
+            if center_x < left_limit:
+                new_pos.setX(left_limit - half_w)
+            elif center_x > right_limit:
+                new_pos.setX(right_limit - half_w)
+
+            if center_y < top_limit:
+                new_pos.setY(top_limit - half_h)
+            elif center_y > bottom_limit:
+                new_pos.setY(bottom_limit - half_h)
                 
             return new_pos
             
+        return super().itemChange(change, value)
+
+
+class DraggablePixmapItem(QGraphicsPixmapItem):
+    """可拖拽的水印图片项"""
+
+    def __init__(self, pixmap=None, parent=None):
+        super().__init__(pixmap, parent)
+        self.setFlag(QGraphicsItem.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, True)
+        self.image_bounds = QRectF()
+
+    def set_image_bounds(self, bounds: QRectF):
+        self.image_bounds = bounds
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.image_bounds.isValid():
+            new_pos = value
+            item_rect = self.boundingRect()
+            half_w = item_rect.width() / 2
+            half_h = item_rect.height() / 2
+
+            center_x = new_pos.x() + half_w
+            center_y = new_pos.y() + half_h
+
+            left_limit = self.image_bounds.left() + half_w
+            right_limit = self.image_bounds.right() - half_w
+            top_limit = self.image_bounds.top() + half_h
+            bottom_limit = self.image_bounds.bottom() - half_h
+
+            if left_limit > right_limit:
+                left_limit = right_limit = (self.image_bounds.left() + self.image_bounds.right()) / 2
+            if top_limit > bottom_limit:
+                top_limit = bottom_limit = (self.image_bounds.top() + self.image_bounds.bottom()) / 2
+
+            if center_x < left_limit:
+                new_pos.setX(left_limit - half_w)
+            elif center_x > right_limit:
+                new_pos.setX(right_limit - half_w)
+
+            if center_y < top_limit:
+                new_pos.setY(top_limit - half_h)
+            elif center_y > bottom_limit:
+                new_pos.setY(bottom_limit - half_h)
+
+            return new_pos
+
         return super().itemChange(change, value)
 
 
@@ -162,79 +225,103 @@ class PreviewGraphicsView(QGraphicsView):
             # 记录原始图像尺寸
             self.original_image_size = (pixmap.width(), pixmap.height())
     
-    def add_watermark_preview(self, text: str, font_size: int = 36, opacity: int = 180, position: tuple = None):
-        """添加可拖拽的水印预览"""
+    def add_watermark_preview(self, text: str = None, font: QFont = None,
+                              color: QColor = None, opacity: int = 180,
+                              position: tuple = None, rotation: int = 0,
+                              pixmap: QPixmap = None) -> None:
+        """添加可拖拽的水印预览（文本或图片）"""
         if not self.image_item:
             return
-            
+
         # 移除旧的水印项
         if self.watermark_item:
             self.scene.removeItem(self.watermark_item)
-            
-        # 创建新的水印项
-        self.watermark_item = DraggableWatermarkItem(text)
-        
-        # 设置字体和样式
-        font = QFont()
-        font.setPointSize(font_size)
-        font.setBold(True)
-        self.watermark_item.setFont(font)
-        self.watermark_item.setDefaultTextColor(QColor(255, 255, 255, opacity))
-        
-        # 设置图像边界
+            self.watermark_item = None
+
         image_rect = self.image_item.boundingRect()
-        self.watermark_item.set_image_bounds(image_rect)
-        
-        # 设置初始位置
         self._suspend_position_emission = True
+
+        if pixmap is not None:
+            self.watermark_item = DraggablePixmapItem(pixmap)
+            self.watermark_item.setOpacity(opacity / 255.0)
+        else:
+            display_text = text or ""
+            self.watermark_item = DraggableWatermarkItem(display_text)
+            if font:
+                self.watermark_item.setFont(font)
+            if color:
+                qcolor = QColor(color)
+                qcolor.setAlpha(opacity)
+                self.watermark_item.setDefaultTextColor(qcolor)
+            else:
+                self.watermark_item.setDefaultTextColor(QColor(255, 255, 255, opacity))
+
+        self.watermark_item.set_image_bounds(image_rect)
+
+        # 计算期望中心点
         if position:
-            # 将原始图像坐标转换为场景坐标
             scale_x = image_rect.width() / self.original_image_size[0]
             scale_y = image_rect.height() / self.original_image_size[1]
-            scene_x = image_rect.left() + position[0] * scale_x
-            scene_y = image_rect.top() + position[1] * scale_y
-            setattr(self.watermark_item, "_ignore_next_bound", True)
-            self.watermark_item.setPos(scene_x, scene_y)
+            desired_center = QPointF(
+                image_rect.left() + position[0] * scale_x,
+                image_rect.top() + position[1] * scale_y
+            )
         else:
-            # 默认位置：右下角
-            watermark_rect = self.watermark_item.boundingRect()
-            default_x = image_rect.right() - watermark_rect.width() - 20
-            default_y = image_rect.bottom() - watermark_rect.height() - 20
-            self.watermark_item.setPos(default_x, default_y)
-        
+            desired_center = image_rect.center()
+
+        # 设置旋转中心并同步角度（逆时针为正）
+        bounds = self.watermark_item.boundingRect()
+        center_local = bounds.center()
+        self.watermark_item.setTransformOriginPoint(center_local)
+        setattr(self.watermark_item, "_ignore_next_bound", True)
+        self.watermark_item.setRotation(-rotation)
+        self.watermark_item.setPos(
+            desired_center.x() - center_local.x(),
+            desired_center.y() - center_local.y()
+        )
+
+        # 文本阴影效果
+        if isinstance(self.watermark_item, DraggableWatermarkItem):
+            effect = getattr(self.watermark_item, "_shadow_effect", None)
+            if effect:
+                self.watermark_item.setGraphicsEffect(None)
+
         # 添加到场景
         self.scene.addItem(self.watermark_item)
-        
-        # 连接位置变化信号
-        self.watermark_item.itemChange = self._on_watermark_position_change
+
+        original_item_change = self.watermark_item.itemChange
+
+        def handler(change, value, original_handler=original_item_change):
+            return self._on_watermark_position_change(change, value, original_handler)
+
+        self.watermark_item.itemChange = handler
         QTimer.singleShot(0, self._resume_position_emission)
         
-    def _on_watermark_position_change(self, change, value):
+    def _on_watermark_position_change(self, change, value, original_handler):
         """水印位置变化处理"""
         if change == QGraphicsItem.ItemPositionChange and getattr(self.watermark_item, "_ignore_next_bound", False):
             setattr(self.watermark_item, "_ignore_next_bound", False)
             return value
 
-        result = DraggableWatermarkItem.itemChange(self.watermark_item, change, value)
+        result = original_handler(change, value)
         
         if change == QGraphicsItem.ItemPositionHasChanged and self.image_item:
             if self._suspend_position_emission:
                 return result
             # 将场景坐标转换回原始图像坐标
             image_rect = self.image_item.boundingRect()
-            scene_pos = self.watermark_item.pos()
-            
-            # 计算相对于图像的位置
-            relative_x = scene_pos.x() - image_rect.left()
-            relative_y = scene_pos.y() - image_rect.top()
-            
-            # 转换为原始图像坐标
+            scene_rect = self.watermark_item.mapRectToScene(self.watermark_item.boundingRect())
+            center_scene = scene_rect.center()
+
+            relative_x = center_scene.x() - image_rect.left()
+            relative_y = center_scene.y() - image_rect.top()
+
             scale_x = self.original_image_size[0] / image_rect.width()
             scale_y = self.original_image_size[1] / image_rect.height()
-            
-            original_x = int(relative_x * scale_x)
-            original_y = int(relative_y * scale_y)
-            
+
+            original_x = int(round(relative_x * scale_x))
+            original_y = int(round(relative_y * scale_y))
+
             # 发射位置变化信号
             self.watermark_position_changed.emit((original_x, original_y))
             
@@ -249,19 +336,18 @@ class PreviewGraphicsView(QGraphicsView):
             return None
             
         image_rect = self.image_item.boundingRect()
-        scene_pos = self.watermark_item.pos()
-        
-        # 计算相对于图像的位置
-        relative_x = scene_pos.x() - image_rect.left()
-        relative_y = scene_pos.y() - image_rect.top()
-        
-        # 转换为原始图像坐标
+        scene_rect = self.watermark_item.mapRectToScene(self.watermark_item.boundingRect())
+        center_scene = scene_rect.center()
+
+        relative_x = center_scene.x() - image_rect.left()
+        relative_y = center_scene.y() - image_rect.top()
+
         scale_x = self.original_image_size[0] / image_rect.width()
         scale_y = self.original_image_size[1] / image_rect.height()
-        
-        original_x = int(relative_x * scale_x)
-        original_y = int(relative_y * scale_y)
-        
+
+        original_x = int(round(relative_x * scale_x))
+        original_y = int(round(relative_y * scale_y))
+
         return (original_x, original_y)
     
     def resizeEvent(self, event):
@@ -314,35 +400,26 @@ class ExportThread(QThread):
                 
                 output_path = os.path.join(self.output_folder, output_name)
                 
-                # 创建带水印的图像
-                original_image = self.processor.images[file_path]
-                if self.config.use_custom_position:
-                    position = self.config.custom_position
-                else:
-                    position = self.processor.calculate_position(
-                        original_image.size, 
-                        self.config.text, 
-                        self.config.position_type,
-                        self.config.font_size
-                    )
-                
-                watermarked_image = self.processor.add_text_watermark(
-                    original_image,
-                    self.config.text,
-                    position,
-                    self.config.opacity,
-                    self.config.font_size
+                # 创建带水印的图像（包含尺寸调整）
+                source_image = self.processor.images.get(file_path)
+                if source_image is None:
+                    raise ValueError("源图像不可用")
+
+                watermarked_image = self.processor.apply_watermark(
+                    source_image,
+                    self.config
                 )
-                
+
                 # 保存图像
                 if self.config.output_format.upper() == "JPEG":
-                    # 转换为RGB模式
-                    if watermarked_image.mode == 'RGBA':
-                        background = watermarked_image.convert('RGB')
-                        watermarked_image = background
-                    watermarked_image.save(output_path, 
-                                         format="JPEG", 
-                                         quality=self.config.jpeg_quality)
+                    image_to_save = watermarked_image
+                    if image_to_save.mode != 'RGB':
+                        image_to_save = image_to_save.convert('RGB')
+                    image_to_save.save(
+                        output_path,
+                        format="JPEG",
+                        quality=self.config.jpeg_quality
+                    )
                 else:
                     watermarked_image.save(output_path, format="PNG")
                 
@@ -383,6 +460,11 @@ class MainWindow(QMainWindow):
         self.use_custom_position = False
         self._suppress_watermark_position_signal = False
         self._pending_preset_position = False
+        self.text_color = QColor(255, 255, 255)
+        self.stroke_color = QColor(0, 0, 0)
+        self.shadow_offset = (2, 2)
+        self.current_watermark_type = "text"
+        self.image_watermark_path = ""
         
         # 设置界面
         self.setup_ui()
@@ -547,41 +629,38 @@ class MainWindow(QMainWindow):
         """设置水印配置组"""
         watermark_group = QGroupBox("水印设置")
         watermark_layout = QVBoxLayout(watermark_group)
-        
-        # 文本输入
-        text_layout = QHBoxLayout()
-        text_layout.addWidget(QLabel("水印文字:"))
-        self.watermark_text = QLineEdit("Sample Watermark")
-        text_layout.addWidget(self.watermark_text)
-        watermark_layout.addLayout(text_layout)
-        
-        # 字体大小
-        font_size_layout = QHBoxLayout()
-        font_size_layout.addWidget(QLabel("字体大小:"))
-        self.font_size_spin = QSpinBox()
-        self.font_size_spin.setRange(12, 200)
-        self.font_size_spin.setValue(36)
-        font_size_layout.addWidget(self.font_size_spin)
-        watermark_layout.addLayout(font_size_layout)
-        
-        # 透明度
-        opacity_layout = QVBoxLayout()
-        opacity_layout.addWidget(QLabel("透明度:"))
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(0, 255)
-        self.opacity_slider.setValue(128)
-        opacity_layout.addWidget(self.opacity_slider)
-        
-        self.opacity_label = QLabel("50%")
-        self.opacity_label.setAlignment(Qt.AlignCenter)
-        opacity_layout.addWidget(self.opacity_label)
-        watermark_layout.addLayout(opacity_layout)
-        
-        # 位置设置
+
+        self.watermark_tabs = QTabWidget()
+
+        self.text_watermark_tab = QWidget()
+        self.setup_text_watermark_tab(self.text_watermark_tab)
+        self.watermark_tabs.addTab(self.text_watermark_tab, "文本水印")
+
+        self.image_watermark_tab = QWidget()
+        self.setup_image_watermark_tab(self.image_watermark_tab)
+        self.watermark_tabs.addTab(self.image_watermark_tab, "图片水印")
+
+        watermark_layout.addWidget(self.watermark_tabs)
+
+        rotation_layout = QHBoxLayout()
+        rotation_layout.addWidget(QLabel("旋转角度 (逆时针为正):"))
+        self.rotation_slider = QSlider(Qt.Horizontal)
+        self.rotation_slider.setRange(-180, 180)
+        self.rotation_slider.setValue(0)
+        rotation_layout.addWidget(self.rotation_slider)
+        self.rotation_spin = QSpinBox()
+        self.rotation_spin.setRange(-180, 180)
+        self.rotation_spin.setValue(0)
+        self.rotation_spin.setFixedWidth(60)
+        rotation_layout.addWidget(self.rotation_spin)
+        self.rotation_label = QLabel("0°")
+        self.rotation_label.setFixedWidth(50)
+        rotation_layout.addWidget(self.rotation_label)
+        watermark_layout.addLayout(rotation_layout)
+
         position_group = QGroupBox("位置设置")
         position_layout = QGridLayout(position_group)
-        
-        # 九宫格按钮
+
         self.position_buttons = QButtonGroup()
         positions = [
             ("左上", "top-left", 0, 0),
@@ -594,7 +673,7 @@ class MainWindow(QMainWindow):
             ("下中", "bottom-center", 2, 1),
             ("右下", "bottom-right", 2, 2)
         ]
-        
+
         for text, value, row, col in positions:
             btn = QRadioButton(text)
             btn.setProperty("position", value)
@@ -602,10 +681,201 @@ class MainWindow(QMainWindow):
             position_layout.addWidget(btn, row, col)
             if value == "bottom-right":
                 btn.setChecked(True)
-        
+
         watermark_layout.addWidget(position_group)
         parent_layout.addWidget(watermark_group)
+
+    def setup_text_watermark_tab(self, widget):
+        layout = QVBoxLayout(widget)
+
+        text_layout = QHBoxLayout()
+        text_layout.addWidget(QLabel("水印文字:"))
+        self.watermark_text = QLineEdit("Sample Watermark")
+        text_layout.addWidget(self.watermark_text)
+        layout.addLayout(text_layout)
+
+        font_row = QHBoxLayout()
+        font_row.addWidget(QLabel("字体:"))
+        self.font_combo = QFontComboBox()
+        font_row.addWidget(self.font_combo)
+
+        font_row.addWidget(QLabel("大小:"))
+        self.font_size_spin = QSpinBox()
+        self.font_size_spin.setRange(12, 200)
+        self.font_size_spin.setValue(36)
+        font_row.addWidget(self.font_size_spin)
+        layout.addLayout(font_row)
+
+        style_layout = QHBoxLayout()
+        self.bold_btn = QPushButton("粗体")
+        self.bold_btn.setCheckable(True)
+        self.bold_btn.setChecked(True)
+        style_layout.addWidget(self.bold_btn)
+
+        self.italic_btn = QPushButton("斜体")
+        self.italic_btn.setCheckable(True)
+        style_layout.addWidget(self.italic_btn)
+        layout.addLayout(style_layout)
+
+        color_layout = QHBoxLayout()
+        color_layout.addWidget(QLabel("文字颜色:"))
+        self.text_color_btn = QPushButton()
+        self.text_color_btn.setFixedSize(36, 24)
+        self._update_color_button(self.text_color_btn, self.text_color)
+        color_layout.addWidget(self.text_color_btn)
+
+        color_layout.addWidget(QLabel("描边颜色:"))
+        self.stroke_color_btn = QPushButton()
+        self.stroke_color_btn.setFixedSize(36, 24)
+        self._update_color_button(self.stroke_color_btn, self.stroke_color)
+        color_layout.addWidget(self.stroke_color_btn)
+        layout.addLayout(color_layout)
+
+        effect_layout = QGridLayout()
+        self.shadow_check = QCheckBox("启用阴影")
+        effect_layout.addWidget(self.shadow_check, 0, 0, 1, 2)
+        effect_layout.addWidget(QLabel("阴影偏移X:"), 1, 0)
+        self.shadow_offset_x_spin = QSpinBox()
+        self.shadow_offset_x_spin.setRange(-50, 50)
+        self.shadow_offset_x_spin.setValue(self.shadow_offset[0])
+        effect_layout.addWidget(self.shadow_offset_x_spin, 1, 1)
+        effect_layout.addWidget(QLabel("阴影偏移Y:"), 1, 2)
+        self.shadow_offset_y_spin = QSpinBox()
+        self.shadow_offset_y_spin.setRange(-50, 50)
+        self.shadow_offset_y_spin.setValue(self.shadow_offset[1])
+        effect_layout.addWidget(self.shadow_offset_y_spin, 1, 3)
+
+        self.stroke_check = QCheckBox("启用描边")
+        effect_layout.addWidget(self.stroke_check, 2, 0, 1, 2)
+        effect_layout.addWidget(QLabel("描边宽度:"), 2, 2)
+        self.stroke_width_spin = QSpinBox()
+        self.stroke_width_spin.setRange(0, 10)
+        self.stroke_width_spin.setValue(1)
+        effect_layout.addWidget(self.stroke_width_spin, 2, 3)
+
+        layout.addLayout(effect_layout)
+
+        opacity_layout = QHBoxLayout()
+        opacity_layout.addWidget(QLabel("透明度:"))
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(0, 255)
+        self.opacity_slider.setValue(128)
+        opacity_layout.addWidget(self.opacity_slider)
+        self.opacity_label = QLabel("50%")
+        self.opacity_label.setFixedWidth(50)
+        opacity_layout.addWidget(self.opacity_label)
+        layout.addLayout(opacity_layout)
+        layout.addStretch()
+
+    def setup_image_watermark_tab(self, widget):
+        layout = QVBoxLayout(widget)
+
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(QLabel("水印图片:"))
+        self.image_path_edit = QLineEdit()
+        self.image_path_edit.setReadOnly(True)
+        path_layout.addWidget(self.image_path_edit)
+        self.image_select_btn = QPushButton("选择图片")
+        path_layout.addWidget(self.image_select_btn)
+        layout.addLayout(path_layout)
+
+        scale_layout = QHBoxLayout()
+        scale_layout.addWidget(QLabel("缩放比例:"))
+        self.image_scale_slider = QSlider(Qt.Horizontal)
+        self.image_scale_slider.setRange(10, 300)
+        self.image_scale_slider.setValue(100)
+        scale_layout.addWidget(self.image_scale_slider)
+        self.image_scale_label = QLabel("100%")
+        self.image_scale_label.setFixedWidth(60)
+        scale_layout.addWidget(self.image_scale_label)
+        self._update_image_scale_label(self.image_scale_slider.value())
+        layout.addLayout(scale_layout)
+
+        image_opacity_layout = QHBoxLayout()
+        image_opacity_layout.addWidget(QLabel("透明度:"))
+        self.image_opacity_slider = QSlider(Qt.Horizontal)
+        self.image_opacity_slider.setRange(0, 255)
+        self.image_opacity_slider.setValue(180)
+        image_opacity_layout.addWidget(self.image_opacity_slider)
+        self.image_opacity_label = QLabel("71%")
+        self.image_opacity_label.setFixedWidth(60)
+        image_opacity_layout.addWidget(self.image_opacity_label)
+        self._update_image_opacity_label(self.image_opacity_slider.value())
+        layout.addLayout(image_opacity_layout)
+
+        layout.addStretch()
         
+    def _update_color_button(self, button: QPushButton, color) -> None:
+        if not isinstance(color, QColor):
+            if isinstance(color, tuple) and len(color) >= 3:
+                color = QColor(color[0], color[1], color[2])
+            else:
+                color = QColor(0, 0, 0)
+        rgba = f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha() if color.alpha() else 255})"
+        button.setStyleSheet(
+            "QPushButton {"
+            f"background-color: {rgba};"
+            "border: 1px solid #666;"
+            "border-radius: 4px;"
+            "}"
+        )
+
+    def _update_image_scale_label(self, value: int) -> None:
+        self.image_scale_label.setText(f"{value}%")
+
+    def _update_image_opacity_label(self, value: int) -> None:
+        percent = int(value * 100 / 255) if value <= 255 else 100
+        self.image_opacity_label.setText(f"{percent}%")
+
+    def _update_rotation_label(self, value: int) -> None:
+        self.rotation_label.setText(f"{value}°")
+
+    def _current_resize_method(self) -> str:
+        if hasattr(self, "resize_width_radio") and self.resize_width_radio.isChecked():
+            return "width"
+        if hasattr(self, "resize_height_radio") and self.resize_height_radio.isChecked():
+            return "height"
+        return "percentage"
+
+    def _update_resize_controls(self) -> None:
+        enabled = self.resize_check.isChecked()
+        method = self._current_resize_method() if enabled else None
+
+        control_widgets = [
+            self.resize_width_radio,
+            self.resize_height_radio,
+            self.resize_percent_radio,
+            self.resize_width_spin,
+            self.resize_height_spin,
+            self.resize_percent_spin,
+            self.keep_aspect_check
+        ]
+
+        for widget in control_widgets:
+            widget.setEnabled(enabled)
+
+        if not enabled:
+            return
+
+        percentage_enabled = method == "percentage"
+        width_enabled = method == "width"
+        height_enabled = method == "height"
+
+        self.resize_percent_spin.setEnabled(percentage_enabled)
+
+        keep_aspect_applicable = width_enabled or height_enabled
+        self.keep_aspect_check.setEnabled(keep_aspect_applicable)
+
+        if percentage_enabled:
+            self.resize_width_spin.setEnabled(False)
+            self.resize_height_spin.setEnabled(False)
+            return
+
+        keep_aspect = self.keep_aspect_check.isChecked() if keep_aspect_applicable else True
+
+        self.resize_width_spin.setEnabled(width_enabled or (not keep_aspect and height_enabled))
+        self.resize_height_spin.setEnabled(height_enabled or (not keep_aspect and width_enabled))
+
     def setup_export_group(self, parent_layout):
         """设置导出配置组"""
         export_group = QGroupBox("导出设置")
@@ -666,6 +936,49 @@ class MainWindow(QMainWindow):
         filename_layout.addLayout(suffix_layout)
         
         export_layout.addLayout(filename_layout)
+
+        resize_group = QGroupBox("尺寸调整")
+        resize_layout = QVBoxLayout(resize_group)
+
+        self.resize_check = QCheckBox("启用尺寸调整")
+        resize_layout.addWidget(self.resize_check)
+
+        method_layout = QHBoxLayout()
+        self.resize_width_radio = QRadioButton("按宽度")
+        self.resize_height_radio = QRadioButton("按高度")
+        self.resize_percent_radio = QRadioButton("按百分比")
+        self.resize_percent_radio.setChecked(True)
+        method_layout.addWidget(self.resize_width_radio)
+        method_layout.addWidget(self.resize_height_radio)
+        method_layout.addWidget(self.resize_percent_radio)
+        resize_layout.addLayout(method_layout)
+
+        resize_params_layout = QGridLayout()
+        resize_params_layout.addWidget(QLabel("宽度(px):"), 0, 0)
+        self.resize_width_spin = QSpinBox()
+        self.resize_width_spin.setRange(10, 10000)
+        self.resize_width_spin.setValue(1920)
+        resize_params_layout.addWidget(self.resize_width_spin, 0, 1)
+
+        resize_params_layout.addWidget(QLabel("高度(px):"), 0, 2)
+        self.resize_height_spin = QSpinBox()
+        self.resize_height_spin.setRange(10, 10000)
+        self.resize_height_spin.setValue(1080)
+        resize_params_layout.addWidget(self.resize_height_spin, 0, 3)
+
+        resize_params_layout.addWidget(QLabel("百分比(%):"), 1, 0)
+        self.resize_percent_spin = QSpinBox()
+        self.resize_percent_spin.setRange(10, 400)
+        self.resize_percent_spin.setValue(100)
+        resize_params_layout.addWidget(self.resize_percent_spin, 1, 1)
+
+        self.keep_aspect_check = QCheckBox("保持宽高比")
+        self.keep_aspect_check.setChecked(True)
+        resize_params_layout.addWidget(self.keep_aspect_check, 1, 2, 1, 2)
+        resize_layout.addLayout(resize_params_layout)
+
+        export_layout.addWidget(resize_group)
+        self._update_resize_controls()
         parent_layout.addWidget(export_group)
         
     def setup_action_group(self, parent_layout):
@@ -700,6 +1013,22 @@ class MainWindow(QMainWindow):
         self.font_size_spin.valueChanged.connect(self.on_watermark_changed)
         self.opacity_slider.valueChanged.connect(self.on_opacity_changed)
         self.position_buttons.buttonClicked.connect(self.on_position_button_clicked)
+        self.font_combo.currentFontChanged.connect(self.on_watermark_changed)
+        self.bold_btn.toggled.connect(self.on_watermark_changed)
+        self.italic_btn.toggled.connect(self.on_watermark_changed)
+        self.text_color_btn.clicked.connect(self.on_choose_text_color)
+        self.stroke_color_btn.clicked.connect(self.on_choose_stroke_color)
+        self.shadow_check.toggled.connect(self.on_watermark_changed)
+        self.shadow_offset_x_spin.valueChanged.connect(self.on_shadow_offset_changed)
+        self.shadow_offset_y_spin.valueChanged.connect(self.on_shadow_offset_changed)
+        self.stroke_check.toggled.connect(self.on_watermark_changed)
+        self.stroke_width_spin.valueChanged.connect(self.on_watermark_changed)
+        self.rotation_slider.valueChanged.connect(self.on_rotation_changed)
+        self.rotation_spin.valueChanged.connect(self.on_rotation_spin_changed)
+        self.watermark_tabs.currentChanged.connect(self.on_watermark_tab_changed)
+        self.image_select_btn.clicked.connect(self.on_choose_image_watermark)
+        self.image_scale_slider.valueChanged.connect(self.on_image_scale_changed)
+        self.image_opacity_slider.valueChanged.connect(self.on_image_opacity_changed)
         
         # 导出设置
         self.format_combo.currentTextChanged.connect(self.on_format_changed)
@@ -709,7 +1038,17 @@ class MainWindow(QMainWindow):
         self.filename_original.toggled.connect(self.on_filename_rule_changed)
         self.filename_prefix.toggled.connect(self.on_filename_rule_changed)
         self.filename_suffix.toggled.connect(self.on_filename_rule_changed)
-        
+
+        # 尺寸调整设置
+        self.resize_check.toggled.connect(self.on_resize_settings_changed)
+        self.resize_width_radio.toggled.connect(self.on_resize_settings_changed)
+        self.resize_height_radio.toggled.connect(self.on_resize_settings_changed)
+        self.resize_percent_radio.toggled.connect(self.on_resize_settings_changed)
+        self.keep_aspect_check.toggled.connect(self.on_resize_settings_changed)
+        self.resize_width_spin.valueChanged.connect(self.on_resize_settings_changed)
+        self.resize_height_spin.valueChanged.connect(self.on_resize_settings_changed)
+        self.resize_percent_spin.valueChanged.connect(self.on_resize_settings_changed)
+
         # 预览视图水印拖拽
         self.preview_view.watermark_position_changed.connect(self.on_watermark_position_changed)
         
@@ -841,6 +1180,70 @@ class MainWindow(QMainWindow):
         value = self.opacity_slider.value()
         percent = int(value * 100 / 255)
         self.opacity_label.setText(f"{percent}%")
+        self.on_watermark_changed()
+
+    def on_choose_text_color(self):
+        color = QColorDialog.getColor(self.text_color, self, "选择文字颜色")
+        if color.isValid():
+            self.text_color = color
+            self._update_color_button(self.text_color_btn, color)
+            self.on_watermark_changed()
+
+    def on_choose_stroke_color(self):
+        color = QColorDialog.getColor(self.stroke_color, self, "选择描边颜色")
+        if color.isValid():
+            self.stroke_color = color
+            self._update_color_button(self.stroke_color_btn, color)
+            self.on_watermark_changed()
+
+    def on_shadow_offset_changed(self, _value=None):
+        self.shadow_offset = (
+            self.shadow_offset_x_spin.value(),
+            self.shadow_offset_y_spin.value()
+        )
+        self.on_watermark_changed()
+
+    def on_rotation_changed(self, value: int):
+        self._update_rotation_label(value)
+        if hasattr(self, "rotation_spin") and self.rotation_spin.value() != value:
+            self.rotation_spin.blockSignals(True)
+            self.rotation_spin.setValue(value)
+            self.rotation_spin.blockSignals(False)
+        self.on_watermark_changed()
+
+    def on_rotation_spin_changed(self, value: int):
+        if self.rotation_slider.value() != value:
+            self.rotation_slider.blockSignals(True)
+            self.rotation_slider.setValue(value)
+            self.rotation_slider.blockSignals(False)
+        self.on_rotation_changed(value)
+
+    def on_watermark_tab_changed(self, index: int):
+        self.current_watermark_type = "text" if index == 0 else "image"
+        self.on_watermark_changed()
+
+    def on_choose_image_watermark(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择水印图片",
+            "",
+            "图片文件 (*.png *.jpg *.jpeg *.bmp *.tiff *.tif)"
+        )
+        if file_path:
+            self.image_path_edit.setText(file_path)
+            self.image_watermark_path = file_path
+            self.on_watermark_changed()
+
+    def on_image_scale_changed(self, value: int):
+        self._update_image_scale_label(value)
+        self.on_watermark_changed()
+
+    def on_image_opacity_changed(self, value: int):
+        self._update_image_opacity_label(value)
+        self.on_watermark_changed()
+
+    def on_resize_settings_changed(self, *_args):
+        self._update_resize_controls()
         self.on_watermark_changed()
 
     def on_position_button_clicked(self, button):
@@ -1064,43 +1467,193 @@ class MainWindow(QMainWindow):
         current_image = self.image_processor.get_current_image()
         if not current_image:
             return
-        
-        # 获取当前水印设置
+
         config = self.get_current_config()
-        
-        # 计算位置
-        if config.use_custom_position:
-            position = config.custom_position
-        else:
-            position = self.image_processor.calculate_position(
-                current_image.size,
-                config.text,
-                config.position_type,
-                config.font_size
+        display_image = current_image.copy()
+
+        if config.resize_enabled:
+            display_image = self.image_processor.resize_image(
+                display_image,
+                config.resize_method,
+                config.resize_width,
+                config.resize_height,
+                config.resize_percentage,
+                config.keep_aspect_ratio
             )
-        
-        # 显示原始图像（不添加水印）
-        pixmap = self.image_processor.pil_to_qpixmap(current_image)
-        self.preview_view.set_image(pixmap)
-        
-        # 添加可拖拽的水印预览
+
+        image_size = display_image.size
+        base_pixmap = self.image_processor.pil_to_qpixmap(display_image)
+        self.preview_view.set_image(base_pixmap)
+
+        watermark_size = (0, 0)
+        text_font = None
+        text_color = None
+        watermark_pixmap = None
+
+        if config.watermark_type == "image":
+            watermark_path = config.image_watermark_path or self.image_watermark_path
+            if not watermark_path or not os.path.exists(watermark_path):
+                self._pending_preset_position = False
+                QTimer.singleShot(0, self._clear_watermark_position_suppression)
+                return
+
+            source_pixmap = QPixmap(watermark_path)
+            if source_pixmap.isNull():
+                self._pending_preset_position = False
+                QTimer.singleShot(0, self._clear_watermark_position_suppression)
+                return
+
+            self.image_watermark_path = watermark_path
+            scale = max(0.05, config.image_scale)
+            width = max(1, int(source_pixmap.width() * scale))
+            height = max(1, int(source_pixmap.height() * scale))
+            watermark_pixmap = source_pixmap.scaled(width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            watermark_size = (watermark_pixmap.width(), watermark_pixmap.height())
+        else:
+            if not config.text.strip():
+                self._pending_preset_position = False
+                QTimer.singleShot(0, self._clear_watermark_position_suppression)
+                return
+
+            text_font = QFont(config.font_family, config.font_size)
+            text_font.setBold(config.font_bold)
+            text_font.setItalic(config.font_italic)
+            text_color = QColor(*config.text_color)
+            text_color.setAlpha(config.opacity)
+            watermark_size = self._estimate_text_size(config)
+
+        if config.use_custom_position and config.custom_position:
+            position = self._clamp_position_to_image(
+                config.custom_position,
+                image_size,
+                watermark_size
+            )
+        else:
+            position = self._calculate_default_watermark_position(
+                image_size,
+                watermark_size,
+                config.position_type
+            )
+
         self._pending_preset_position = not config.use_custom_position
-        if config.text.strip():  # 只有在有文本时才显示水印
-            self._suppress_watermark_position_signal = True
+        self._suppress_watermark_position_signal = True
+
+        if config.watermark_type == "image" and watermark_pixmap:
             self.preview_view.add_watermark_preview(
-                config.text,
-                config.font_size,
-                config.opacity,
-                position
+                opacity=config.image_opacity,
+                position=position,
+                rotation=config.rotation_angle,
+                pixmap=watermark_pixmap
             )
-            QTimer.singleShot(0, self._clear_watermark_position_suppression)
-        else:
-            self._pending_preset_position = False
-            QTimer.singleShot(0, self._clear_watermark_position_suppression)
+        elif config.watermark_type == "text":
+            self.preview_view.add_watermark_preview(
+                text=config.text,
+                font=text_font,
+                color=text_color,
+                opacity=config.opacity,
+                position=position,
+                rotation=config.rotation_angle
+            )
+            self._apply_text_shadow_effect(config)
+
+        QTimer.singleShot(0, self._clear_watermark_position_suppression)
 
         if self._pending_preset_position:
             QTimer.singleShot(0, self._clear_pending_preset_position)
     
+    def _estimate_text_size(self, config: WatermarkConfig) -> tuple:
+        return self.image_processor.measure_text(
+            config.text or "",
+            config.font_family,
+            config.font_size,
+            config.font_bold,
+            config.font_italic,
+            config.text_stroke,
+            config.stroke_width,
+            config.text_shadow,
+            tuple(config.shadow_offset),
+            config.rotation_angle,
+            config.font_path or None,
+            config.font_index
+        )
+
+    @staticmethod
+    def _clamp_position_to_image(position: tuple, image_size: tuple, watermark_size: tuple) -> tuple:
+        img_w, img_h = image_size
+        wm_w, wm_h = watermark_size or (0, 0)
+
+        half_w = wm_w / 2
+        half_h = wm_h / 2
+
+        min_x = half_w
+        max_x = img_w - half_w
+        min_y = half_h
+        max_y = img_h - half_h
+
+        if min_x > max_x:
+            min_x = max_x = img_w / 2
+        if min_y > max_y:
+            min_y = max_y = img_h / 2
+
+        if not position:
+            return int(round(min_x)), int(round(min_y))
+
+        x = max(min_x, min(position[0], max_x))
+        y = max(min_y, min(position[1], max_y))
+        return int(round(x)), int(round(y))
+
+    def _calculate_default_watermark_position(self, image_size: tuple, watermark_size: tuple,
+                                              position_type: str) -> tuple:
+        img_width, img_height = image_size
+        wm_width, wm_height = watermark_size
+        margin = 20
+
+        wm_width = min(wm_width, img_width)
+        wm_height = min(wm_height, img_height)
+
+        half_w = wm_width / 2
+        half_h = wm_height / 2
+
+        left_x = margin + half_w
+        right_x = max(margin + half_w, img_width - margin - half_w)
+        center_x = img_width / 2
+
+        top_y = margin + half_h
+        bottom_y = max(margin + half_h, img_height - margin - half_h)
+        center_y = img_height / 2
+
+        positions = {
+            'top-left': (left_x, top_y),
+            'top-center': (center_x, top_y),
+            'top-right': (right_x, top_y),
+            'middle-left': (left_x, center_y),
+            'center': (center_x, center_y),
+            'middle-right': (right_x, center_y),
+            'bottom-left': (left_x, bottom_y),
+            'bottom-center': (center_x, bottom_y),
+            'bottom-right': (right_x, bottom_y)
+        }
+
+        chosen = positions.get(position_type, positions['bottom-right'])
+        return int(round(chosen[0])), int(round(chosen[1]))
+
+    def _apply_text_shadow_effect(self, config: WatermarkConfig) -> None:
+        if not isinstance(self.preview_view.watermark_item, DraggableWatermarkItem):
+            return
+
+        item = self.preview_view.watermark_item
+        if config.text_shadow:
+            effect = QGraphicsDropShadowEffect()
+            effect.setBlurRadius(20)
+            offset_x, offset_y = config.shadow_offset
+            effect.setOffset(offset_x, offset_y)
+            effect.setColor(QColor(0, 0, 0, min(255, config.opacity)))
+            item.setGraphicsEffect(effect)
+            item._shadow_effect = effect
+        else:
+            item.setGraphicsEffect(None)
+            item._shadow_effect = None
+
     def get_current_config(self) -> WatermarkConfig:
         """获取当前UI配置"""
         config = WatermarkConfig()
@@ -1108,7 +1661,34 @@ class MainWindow(QMainWindow):
         # 水印设置
         config.text = self.watermark_text.text()
         config.font_size = self.font_size_spin.value()
+        current_font = self.font_combo.currentFont()
+        config.font_family = current_font.family()
+        config.font_bold = self.bold_btn.isChecked()
+        config.font_italic = self.italic_btn.isChecked()
         config.opacity = self.opacity_slider.value()
+        config.text_color = (
+            self.text_color.red(),
+            self.text_color.green(),
+            self.text_color.blue()
+        )
+        config.text_shadow = self.shadow_check.isChecked()
+        config.shadow_offset = (
+            self.shadow_offset_x_spin.value(),
+            self.shadow_offset_y_spin.value()
+        )
+        config.text_stroke = self.stroke_check.isChecked()
+        config.stroke_width = self.stroke_width_spin.value()
+        config.stroke_color = (
+            self.stroke_color.red(),
+            self.stroke_color.green(),
+            self.stroke_color.blue()
+        )
+        config.rotation_angle = self.rotation_slider.value()
+        config.watermark_type = self.current_watermark_type
+        config.image_watermark_path = self.image_path_edit.text()
+        config.image_scale = max(0.05, self.image_scale_slider.value() / 100.0)
+        config.image_opacity = self.image_opacity_slider.value()
+        config.custom_position = self.custom_watermark_position or (0, 0)
         
         # 位置设置
         if self.use_custom_position and self.custom_watermark_position:
@@ -1134,6 +1714,24 @@ class MainWindow(QMainWindow):
         
         config.filename_prefix = self.prefix_input.text()
         config.filename_suffix = self.suffix_input.text()
+
+        config.resize_enabled = self.resize_check.isChecked()
+        config.resize_method = self._current_resize_method()
+        config.resize_width = self.resize_width_spin.value()
+        config.resize_height = self.resize_height_spin.value()
+        config.resize_percentage = self.resize_percent_spin.value()
+        config.keep_aspect_ratio = self.keep_aspect_check.isChecked()
+
+        resolved_font = self.image_processor.resolve_font_face(
+            config.font_family,
+            config.font_bold,
+            config.font_italic
+        )
+        if resolved_font:
+            config.font_path, config.font_index = resolved_font
+        else:
+            config.font_path = ""
+            config.font_index = 0
         
         return config
     
@@ -1142,10 +1740,51 @@ class MainWindow(QMainWindow):
         config = self.config_manager.get_config()
         
         # 设置水印配置
+        self.current_watermark_type = config.watermark_type
+        self.watermark_tabs.blockSignals(True)
+        self.watermark_tabs.setCurrentIndex(0 if config.watermark_type == "text" else 1)
+        self.watermark_tabs.blockSignals(False)
         self.watermark_text.setText(config.text)
         self.font_size_spin.setValue(config.font_size)
+        font = QFont(config.font_family, config.font_size)
+        self.font_combo.setCurrentFont(font)
+        self.bold_btn.setChecked(config.font_bold)
+        self.italic_btn.setChecked(config.font_italic)
+        self.text_color = QColor(*config.text_color)
+        self._update_color_button(self.text_color_btn, self.text_color)
+        self.stroke_color = QColor(*config.stroke_color)
+        self._update_color_button(self.stroke_color_btn, self.stroke_color)
+        self.shadow_check.setChecked(config.text_shadow)
+        self.shadow_offset_x_spin.setValue(config.shadow_offset[0])
+        self.shadow_offset_y_spin.setValue(config.shadow_offset[1])
+        self.shadow_offset = tuple(config.shadow_offset)
+        self.stroke_check.setChecked(config.text_stroke)
+        self.stroke_width_spin.setValue(config.stroke_width)
         self.opacity_slider.setValue(config.opacity)
         self.on_opacity_changed()
+        self.rotation_spin.setValue(config.rotation_angle)
+        self.rotation_slider.setValue(config.rotation_angle)
+        self._update_rotation_label(config.rotation_angle)
+        self.image_path_edit.setText(config.image_watermark_path)
+        self.image_watermark_path = config.image_watermark_path
+        scale_value = int(config.image_scale * 100)
+        scale_value = max(self.image_scale_slider.minimum(), min(self.image_scale_slider.maximum(), scale_value))
+        self.image_scale_slider.setValue(scale_value)
+        self._update_image_scale_label(scale_value)
+        self.image_opacity_slider.setValue(config.image_opacity)
+        self._update_image_opacity_label(config.image_opacity)
+        self.resize_check.setChecked(config.resize_enabled)
+        if config.resize_method == "width":
+            self.resize_width_radio.setChecked(True)
+        elif config.resize_method == "height":
+            self.resize_height_radio.setChecked(True)
+        else:
+            self.resize_percent_radio.setChecked(True)
+        self.resize_width_spin.setValue(config.resize_width)
+        self.resize_height_spin.setValue(config.resize_height)
+        self.resize_percent_spin.setValue(config.resize_percentage)
+        self.keep_aspect_check.setChecked(config.keep_aspect_ratio)
+        self._update_resize_controls()
         
         # 设置位置
         for button in self.position_buttons.buttons():
@@ -1191,39 +1830,94 @@ class MainWindow(QMainWindow):
         """静默加载配置到UI（不触发信号和预览更新）"""
         config = self.config_manager.get_config()
         
-        # 临时阻塞信号
-        self.watermark_text.blockSignals(True)
-        self.font_size_spin.blockSignals(True)
-        self.opacity_slider.blockSignals(True)
-        self.format_combo.blockSignals(True)
-        self.jpeg_quality_slider.blockSignals(True)
-        self.prefix_input.blockSignals(True)
-        self.suffix_input.blockSignals(True)
-        
+        widgets_to_block = [
+            self.watermark_tabs,
+            self.watermark_text,
+            self.font_size_spin,
+            self.font_combo,
+            self.bold_btn,
+            self.italic_btn,
+            self.opacity_slider,
+            self.shadow_check,
+            self.shadow_offset_x_spin,
+            self.shadow_offset_y_spin,
+            self.stroke_check,
+            self.stroke_width_spin,
+            self.rotation_slider,
+            self.rotation_spin,
+            self.image_scale_slider,
+            self.image_opacity_slider,
+            self.resize_check,
+            self.resize_width_radio,
+            self.resize_height_radio,
+            self.resize_percent_radio,
+            self.resize_width_spin,
+            self.resize_height_spin,
+            self.resize_percent_spin,
+            self.keep_aspect_check,
+            self.format_combo,
+            self.jpeg_quality_slider,
+            self.filename_original,
+            self.filename_prefix,
+            self.filename_suffix,
+            self.prefix_input,
+            self.suffix_input
+        ]
+
+        for widget in widgets_to_block:
+            widget.blockSignals(True)
+
         try:
-            # 设置水印配置
+            self.current_watermark_type = config.watermark_type
+            self.watermark_tabs.setCurrentIndex(0 if config.watermark_type == "text" else 1)
             self.watermark_text.setText(config.text)
             self.font_size_spin.setValue(config.font_size)
+            self.font_combo.setCurrentFont(QFont(config.font_family, config.font_size))
+            self.bold_btn.setChecked(config.font_bold)
+            self.italic_btn.setChecked(config.font_italic)
+            self.text_color = QColor(*config.text_color)
+            self._update_color_button(self.text_color_btn, self.text_color)
+            self.stroke_color = QColor(*config.stroke_color)
+            self._update_color_button(self.stroke_color_btn, self.stroke_color)
+            self.shadow_check.setChecked(config.text_shadow)
+            self.shadow_offset_x_spin.setValue(config.shadow_offset[0])
+            self.shadow_offset_y_spin.setValue(config.shadow_offset[1])
+            self.shadow_offset = tuple(config.shadow_offset)
+            self.stroke_check.setChecked(config.text_stroke)
+            self.stroke_width_spin.setValue(config.stroke_width)
             self.opacity_slider.setValue(config.opacity)
-            
-            # 设置位置
+            self.rotation_spin.setValue(config.rotation_angle)
+            self.rotation_slider.setValue(config.rotation_angle)
+            self._update_rotation_label(config.rotation_angle)
+            self.image_path_edit.setText(config.image_watermark_path)
+            self.image_watermark_path = config.image_watermark_path
+            scale_value = int(config.image_scale * 100)
+            scale_value = max(self.image_scale_slider.minimum(), min(self.image_scale_slider.maximum(), scale_value))
+            self.image_scale_slider.setValue(scale_value)
+            self._update_image_scale_label(scale_value)
+            self.image_opacity_slider.setValue(config.image_opacity)
+            self._update_image_opacity_label(config.image_opacity)
+            self.resize_check.setChecked(config.resize_enabled)
+            if config.resize_method == "width":
+                self.resize_width_radio.setChecked(True)
+            elif config.resize_method == "height":
+                self.resize_height_radio.setChecked(True)
+            else:
+                self.resize_percent_radio.setChecked(True)
+            self.resize_width_spin.setValue(config.resize_width)
+            self.resize_height_spin.setValue(config.resize_height)
+            self.resize_percent_spin.setValue(config.resize_percentage)
+            self.keep_aspect_check.setChecked(config.keep_aspect_ratio)
+            self._update_resize_controls()
+
             for button in self.position_buttons.buttons():
                 button.blockSignals(True)
-                if button.property("position") == config.position_type:
-                    button.setChecked(True)
-                else:
-                    button.setChecked(False)
+                button.setChecked(button.property("position") == config.position_type)
                 button.blockSignals(False)
-            
-            # 设置导出配置
+
             self.format_combo.setCurrentText(config.output_format)
             self.jpeg_quality_slider.setValue(config.jpeg_quality)
-            
-            # 设置文件名规则
-            self.filename_original.blockSignals(True)
-            self.filename_prefix.blockSignals(True)
-            self.filename_suffix.blockSignals(True)
-            
+
             if config.filename_rule == "original":
                 self.filename_original.setChecked(True)
                 self.filename_prefix.setChecked(False)
@@ -1236,44 +1930,29 @@ class MainWindow(QMainWindow):
                 self.filename_original.setChecked(False)
                 self.filename_prefix.setChecked(False)
                 self.filename_suffix.setChecked(True)
-            
-            self.filename_original.blockSignals(False)
-            self.filename_prefix.blockSignals(False)
-            self.filename_suffix.blockSignals(False)
-            
+
             self.prefix_input.setText(config.filename_prefix)
             self.suffix_input.setText(config.filename_suffix)
-            
-            # 处理自定义位置
+
             if config.use_custom_position and config.custom_position:
-                # 加载自定义位置
                 self.use_custom_position = True
                 self.custom_watermark_position = config.custom_position
-                # 取消所有位置按钮的选择
                 for button in self.position_buttons.buttons():
                     button.blockSignals(True)
                     button.setChecked(False)
                     button.blockSignals(False)
             else:
-                # 使用九宫格位置
                 self.use_custom_position = False
                 self.custom_watermark_position = None
-            
-            # 更新UI状态
+
             self.on_filename_rule_changed()
             self.on_format_changed()
             self.on_opacity_changed()
             self.on_jpeg_quality_changed()
-            
+
         finally:
-            # 恢复信号
-            self.watermark_text.blockSignals(False)
-            self.font_size_spin.blockSignals(False)
-            self.opacity_slider.blockSignals(False)
-            self.format_combo.blockSignals(False)
-            self.jpeg_quality_slider.blockSignals(False)
-            self.prefix_input.blockSignals(False)
-            self.suffix_input.blockSignals(False)
+            for widget in widgets_to_block:
+                widget.blockSignals(False)
     
     def export_images(self):
         """导出图像"""
